@@ -1,0 +1,208 @@
+function [Sr,idx] = decode_p_frame(idx,bitstream,QP,h,w,block_size,S)
+
+% Initialization
+global QP 
+global mvm S Sr h w frame
+global mx my
+
+global Table_coeff0 Table_coeff1 Table_coeff2 Table_coeff3
+global Table_run Table_zeros
+load table.mat
+
+% Array for motion vectors
+mvm = zeros(h+1,w+2,2);
+% reconstructed frame
+Sr = zeros(h,w);
+
+for i = 1:block_size:h
+    for j = 1:block_size:w
+
+        % bs - macroblock size
+        bs = block_size;
+        % decode MB header
+        if (bitstream(idx)=='0')
+            disp('Decoding 16x16 MB')
+            k = k + 1;
+        end
+
+        % determine the 16x16 partition mode
+        % ind_16 - partition index (0 = full, 1 = vert, 2 = horiz, 3 = quad)
+        [mode,idx]= dec_golomb(idx,bitstream,0);
+        
+        switch mode
+            case 0
+                [Sr(i:i+bs-1,j:j+bs-1),idx]= dec_block(idx,bitstream,bs,bs,i,j,'m');
+            case 1
+                [Sr(i:i+bs-1,j:j+bs/2-1),idx]= dec_block(idx,bitstream,bs/2,bs,i,j,'a');
+                [Sr(i:i+bs-1,j+bs/2:j+bs-1),idx]= dec_block(idx,bitstream,bs/2,bs,i,j+bs/2,'c');
+            case 2
+                [Sr(i:i+bs/2-1,j:j+bs-1),idx]= dec_block(idx,bitstream,bs,bs/2,mr,i,j,'b');
+                [Sr(i+bs/2:i+bs-1,j:j+bs-1),idx]= dec_block(idx,bitstream,bs,bs/2,mr,i+bs/2,j,'a');
+            case 3
+                [Sr(i:i+bs/2-1,j:j+bs/2-1),idx]= dec_block_8(idx,bitstream,bs/2,bs/2,i,j);
+                [Sr(i:i+bs/2-1,j+bs/2:j+bs-1),idx]= dec_block_8(idx,bitstream,bs/2,bs/2,i,j+bs/2);
+                [Sr(i+bs/2:i+bs-1,j:j+bs/2-1),idx]= dec_block_8(idx,bitstream,bs/2,bs/2,i+bs/2,j);
+                [Sr(i+bs/2:i+bs-1,j+bs/2:j+bs-1),idx]= dec_block_8(idx,bitstream,bs/2,bs/2,i+bs/2,j+bs/2);
+        end
+    end
+end
+
+%--------------------------------------------------------------------------
+function [rec,k] = dec_block(k,bits,bsx,bsy,i,j,mvp_mode)
+
+global S h w
+
+% calculate the motion vector predictions mvxp and mvyp
+switch mvp_mode
+    case 'm'
+        [mvxp,mvyp] = find_median_mv_pred(i,j,bsx);
+    case 'a'
+        [mvxp,mvyp] = find_mv_pred_a(i,j,bsx);
+    case 'b'
+        [mvxp,mvyp] = find_mv_pred_b(i,j,bsx);
+    case 'c'
+        [mvxp,mvyp] = find_mv_pred_c(i,j,bsx);
+end
+
+% get the mvx and mvy difference from the bitstream
+[mvx_diff,k] = dec_golomb(k,bits,1);
+[mvy_diff,k] = dec_golomb(k,bits,1);
+
+% original mvx and mvy
+mvx = mvx_diff/4 + mvxp;
+mvy = mvy_diff/4 + mvyp;
+
+% finding mr is important for finding the prediction
+mr = find_mr(mvx,mvy);
+
+% extract the search window from the previous reconstructed frame
+swr = extract_object(S,[j-mr i-mr bsx+2*mr bsy+2*mr],[1 1 w h]);
+[n,m] = size(swr);
+swr_sup = interp2([1:m],[1:n]',mirror_pad(swr),[1:.25:m],[1:.25:n]','bicubic');
+
+y = 4*mvx + 4*mr + 1;
+x = 4*mvy + 4*mr + 1;
+pred = swr_sup(x:4:x+4*bsy-1,y:4:y+4*bsx-1);
+
+
+
+%--------------------------------------------------------------------------
+function [mvxp,mvyp] = find_median_mv_pred(i,j,bs);
+
+global mvm
+
+for k = 1:2
+
+    mvpa = mvm(i+1,j,k);
+    mvpb = mvm(i,j+1,k);
+    mvpc = mvm(i,j+bs+1,k);
+    mvpd = mvm(i,j,k);
+
+    
+    switch bin2dec([num2str(isinf(mvpa)) num2str(isinf(mvpb)) num2str(isinf(mvpc)) num2str(isinf(mvpd))])
+        case 0
+            mvp(k) = median([mvpa mvpb mvpc]);
+        case 1
+            mvp(k) = median([mvpa mvpb mvpc]);
+        case 2
+            mvp(k) = median([mvpa mvpb mvpd]);
+        case 3
+            mvp(k) = median([mvpa mvpb]);
+        case 4
+            mvp(k) = median([mvpa mvpc mvpd]);
+        case 5
+            mvp(k) = median([mvpa mvpc]);
+        case 6
+            mvp(k) = median([mvpa mvpd]);
+        case 7
+            mvp(k) = mvpa;
+        case 8
+            mvp(k) = median([mvpb mvpc mvpd]);
+        case 9
+            mvp(k) = median([mvpb mvpc]);
+        case 10
+            mvp(k) = median([mvpb mvpd]);
+        case 11
+            mvp(k) = mvpb;
+        case 12
+            mvp(k) = median([mvpc mvpd]);
+        case 13
+            mvp(k) = mvpc;
+        case 14
+            mvp(k) = mvpd;
+        case 15
+            mvp(k) = 0;
+    end
+end
+
+mvxp = mvp(1);
+mvyp = mvp(2);
+
+
+%--------------------------------------------------------------------------
+function [mvxp,mvyp] = find_mv_pred_a(i,j,bs);
+
+global mvm
+
+for k = 1:2
+
+    mvpa = mvm(i+1,j,k);
+
+    switch isinf(mvpa)
+        case 0
+            mvp(k) = mvpa;
+        case 1
+            mvp(k) = 0;
+    end
+end
+
+mvxp = mvp(1);
+mvyp = mvp(2);
+
+
+%--------------------------------------------------------------------------
+function [mvxp,mvyp] = find_mv_pred_b(i,j,bs);
+
+global mvm
+
+for k = 1:2
+
+    mvpb = mvm(i,j+1,k);
+
+    switch isinf(mvpb)
+        case 0
+            mvp(k) = mvpb;
+        case 1
+            mvp(k) = 0;
+    end
+end
+
+mvxp = mvp(1);
+mvyp = mvp(2);
+
+
+%--------------------------------------------------------------------------
+function [mvxp,mvyp] = find_mv_pred_c(i,j,bs);
+
+global mvm
+
+for k = 1:2
+
+    mvpc = mvm(i,j+bs+1,k);
+
+    switch isinf(mvpc)
+        case 0
+            mvp(k) = mvpc;
+        case 1
+            mvp(k) = 0;
+    end
+end
+
+mvxp = mvp(1);
+mvyp = mvp(2);
+
+
+%------------------------------------------------------------------
+function [mr] = find_mr(mvx,mvy)
+
+mr = ceil(max(abs(mvx),abs(mvy)));

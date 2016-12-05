@@ -1,6 +1,3 @@
-# H264_v1_StegEncoder
-Program used in Audio/Video Compression Algorithms class.
-
 ########## - H264_v1 - Steganography Edition - ##########
 Use the following code as main: A00_Main.m
 
